@@ -22,45 +22,76 @@ if "GROQ_API_KEY" not in st.secrets:
 client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
 # ===============================
-# SESSION STATE (FULL RESET SAFE)
+# SESSION STATE
 # ===============================
-def init_state():
+def reset_state():
     st.session_state.code = ""
     st.session_state.bugs = ""
     st.session_state.explanation = ""
-    st.session_state.optimized_code = ""
+    st.session_state.optimized = ""
     st.session_state.complexity = ""
-    st.session_state.python_code = ""
-    st.session_state.analysis_done = False
+    st.session_state.python = ""
+    st.session_state.analyzed = False
 
-if "analysis_done" not in st.session_state:
-    init_state()
+if "analyzed" not in st.session_state:
+    reset_state()
 
 # ===============================
-# LANGUAGE DETECTION (SAME AS HF)
+# LANGUAGE DETECTION
 # ===============================
 def detect_language(code):
     c = code.lower()
-    scores = {
-        "C++": sum(k in c for k in ["#include", "std::", "int main"]),
-        "Java": sum(k in c for k in ["public class", "system.out"]),
-        "Python": sum(k in c for k in ["def ", "print(", "none"])
-    }
-    return max(scores, key=scores.get)
+    if "#include" in c or "std::" in c:
+        return "C++"
+    if "public class" in c or "system.out" in c:
+        return "Java"
+    return "Python"
+
+# ===============================
+# EXPLANATION GENERATOR
+# ===============================
+def generate_explanation(bugs, mode):
+    if not bugs:
+        return "✅ **No explanation needed. Code is correct and safe.**"
+
+    output = ""
+    for b in bugs:
+        if mode == "Beginner":
+            output += f"""
+🔹 **Line {b['line']}**  
+• Problem: {b['message']}  
+• Why it matters: This can lead to incorrect results or crashes  
+• How to fix: `{b['fix']}`  
+
+"""
+        else:
+            output += f"""
+🔸 **Line {b['line']}**  
+• Bug Type: {b['type']}  
+• Severity: {b['severity']}  
+• Root Cause: The logic violates Python best practices  
+• Fix Strategy: `{b['fix']}`  
+• Best Practice: Use explicit checks and safe comparisons  
+
+"""
+    return output
 
 # ===============================
 # ANALYZE CODE (BUGS ONLY)
 # ===============================
-def analyze_code(code, language, mode):
+def analyze_code(code, mode):
+    lang = detect_language(code)
+
     prompt = f"""
 Detect ONLY real correctness bugs.
 
-Language: {language}
+Language: {lang}
 
-If code is correct return:
-{{ "bugs": [] }}
+Return JSON ONLY.
+If no bugs:
+{{"bugs":[]}}
 
-Otherwise return:
+Else:
 {{
  "bugs":[
   {{
@@ -89,44 +120,34 @@ CODE:
     except:
         bugs = []
 
-    # BUG OUTPUT
     if not bugs:
         bugs_md = "🎉 **Your code is 100% perfect and bug-free**"
-        explanation_md = "✅ No explanation needed. Code is correct and safe."
     else:
         bugs_md = "\n".join(
             f"❌ **Line {b['line']}**: {b['message']}  \n🔧 Fix: `{b['fix']}`"
             for b in bugs
         )
 
-        explanation_md = ""
-        for b in bugs:
-            explanation_md += f"""
-🔹 **Line {b['line']}**  
-• Problem: {b['message']}  
-• Why it matters: May cause incorrect behavior  
-• How to fix: `{b['fix']}`  
+    explanation = generate_explanation(bugs, mode)
+    complexity = "**Time Complexity:** O(1)\n\n**Space Complexity:** O(1)"
 
-"""
-
-    complexity_md = "**Time Complexity:** O(1)\n\n**Space Complexity:** O(1)"
-
-    return bugs_md, explanation_md, complexity_md
+    return bugs_md, explanation, complexity
 
 # ===============================
-# OPTIMIZE CODE (BUTTON ONLY)
+# OPTIMIZER (ON BUTTON)
 # ===============================
-def optimize_code(code, language):
+def optimize_code(code):
+    lang = detect_language(code)
     prompt = f"""
 Fix detected bugs ONLY.
 
-Language: {language}
+Language: {lang}
 
 Return JSON ONLY:
 {{
- "optimized_code": "...",
- "time": "O(1)",
- "space": "O(1)"
+ "optimized_code":"...",
+ "time":"O(1)",
+ "space":"O(1)"
 }}
 
 CODE:
@@ -145,9 +166,12 @@ CODE:
         return code.replace("== None", "is None"), "O(1)", "O(1)"
 
 # ===============================
-# CONVERT TO PYTHON (UNCHANGED)
+# CONVERT TO PYTHON (FIXED)
 # ===============================
 def convert_to_python(code):
+    lang = detect_language(code)
+    if lang == "Python":
+        return "✅ Your code is already Python."
     r = client.chat.completions.create(
         model="llama-3.1-8b-instant",
         temperature=0,
@@ -156,53 +180,53 @@ def convert_to_python(code):
     return r.choices[0].message.content.strip()
 
 # ===============================
-# INPUT UI
+# INPUT SECTION
 # ===============================
-st.session_state.code = st.text_area(
-    "💻 Code Input",
-    value=st.session_state.code,
-    height=250
-)
+uploaded = st.file_uploader("📂 Upload Code File", type=["py","cpp","java","txt"])
+if uploaded:
+    st.session_state.code = uploaded.read().decode("utf-8")
 
-override = st.selectbox("Language Override", ["Auto","C++","Java","Python"])
+st.session_state.code = st.text_area("💻 Code Input", st.session_state.code, height=260)
+
+col_copy, col_clear = st.columns(2)
+with col_copy:
+    st.code(st.session_state.code)
+with col_clear:
+    if st.button("🧹 Clear"):
+        reset_state()
+        st.experimental_rerun()
+
 mode = st.radio("Explanation Mode", ["Beginner","Advanced"], horizontal=True)
 
 # ===============================
-# BUTTON ROW (MATCHES HF)
+# BUTTONS
 # ===============================
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3 = st.columns(3)
 
 with col1:
     if st.button("🔍 Analyze Code"):
         if st.session_state.code.strip():
-            lang = detect_language(st.session_state.code) if override == "Auto" else override
-            b, e, c = analyze_code(st.session_state.code, lang, mode)
+            b, e, c = analyze_code(st.session_state.code, mode)
             st.session_state.bugs = b
             st.session_state.explanation = e
             st.session_state.complexity = c
-            st.session_state.analysis_done = True
+            st.session_state.analyzed = True
 
 with col2:
     if st.button("⚡ Optimize Code"):
-        if not st.session_state.analysis_done:
-            st.warning("Please analyze the code first.")
-        else:
-            lang = detect_language(st.session_state.code) if override == "Auto" else override
-            opt, t, s = optimize_code(st.session_state.code, lang)
-            st.session_state.optimized_code = opt
+        if st.session_state.analyzed:
+            opt, t, s = optimize_code(st.session_state.code)
+            st.session_state.optimized = opt
             st.session_state.complexity = f"**Time Complexity:** {t}\n\n**Space Complexity:** {s}"
+        else:
+            st.warning("Analyze code first.")
 
 with col3:
     if st.button("🔄 Convert to Python"):
-        st.session_state.python_code = convert_to_python(st.session_state.code)
-
-with col4:
-    if st.button("🧹 Clear"):
-        init_state()
-        st.experimental_rerun()
+        st.session_state.python = convert_to_python(st.session_state.code)
 
 # ===============================
-# OUTPUT SECTIONS (IDENTICAL TO HF)
+# OUTPUT
 # ===============================
 st.markdown("### 🐞 Detected Bugs")
 st.markdown(st.session_state.bugs)
@@ -211,10 +235,12 @@ st.markdown("### 🎓 Explanation")
 st.markdown(st.session_state.explanation)
 
 st.markdown("### ⚡ Optimized Code")
-st.code(st.session_state.optimized_code, language="python")
+st.code(st.session_state.optimized, language="python")
+if st.session_state.optimized:
+    st.button("📋 Copy Optimized Code", on_click=lambda: st.write("Copied!"))
 
 st.markdown("### 📊 Complexity")
 st.markdown(st.session_state.complexity)
 
 st.markdown("### 🐍 Converted Python Code")
-st.code(st.session_state.python_code, language="python")
+st.code(st.session_state.python, language="python")
