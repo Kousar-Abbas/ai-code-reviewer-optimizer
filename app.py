@@ -22,22 +22,22 @@ if "GROQ_API_KEY" not in st.secrets:
 client = Groq(api_key=st.secrets["GROQ_API_KEY"])
 
 # ===============================
-# SESSION STATE
+# SESSION STATE (FULL RESET SAFE)
 # ===============================
-defaults = {
-    "bugs": "",
-    "explanation": "",
-    "optimized_code": "",
-    "complexity": "",
-    "python_code": "",
-    "analysis_done": False
-}
-for k, v in defaults.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+def init_state():
+    st.session_state.code = ""
+    st.session_state.bugs = ""
+    st.session_state.explanation = ""
+    st.session_state.optimized_code = ""
+    st.session_state.complexity = ""
+    st.session_state.python_code = ""
+    st.session_state.analysis_done = False
+
+if "analysis_done" not in st.session_state:
+    init_state()
 
 # ===============================
-# LANGUAGE DETECTION
+# LANGUAGE DETECTION (SAME AS HF)
 # ===============================
 def detect_language(code):
     c = code.lower()
@@ -57,7 +57,10 @@ Detect ONLY real correctness bugs.
 
 Language: {language}
 
-Return STRICT JSON:
+If code is correct return:
+{{ "bugs": [] }}
+
+Otherwise return:
 {{
  "bugs":[
   {{
@@ -69,9 +72,6 @@ Return STRICT JSON:
   }}
  ]
 }}
-
-If code is perfect, return:
-{{ "bugs": [] }}
 
 CODE:
 {code}
@@ -109,13 +109,12 @@ CODE:
 
 """
 
-    # COMPLEXITY (STATIC)
     complexity_md = "**Time Complexity:** O(1)\n\n**Space Complexity:** O(1)"
 
     return bugs_md, explanation_md, complexity_md
 
 # ===============================
-# OPTIMIZE CODE (SEPARATE)
+# OPTIMIZE CODE (BUTTON ONLY)
 # ===============================
 def optimize_code(code, language):
     prompt = f"""
@@ -123,7 +122,7 @@ Fix detected bugs ONLY.
 
 Language: {language}
 
-Return JSON:
+Return JSON ONLY:
 {{
  "optimized_code": "...",
  "time": "O(1)",
@@ -146,7 +145,7 @@ CODE:
         return code.replace("== None", "is None"), "O(1)", "O(1)"
 
 # ===============================
-# CONVERT TO PYTHON
+# CONVERT TO PYTHON (UNCHANGED)
 # ===============================
 def convert_to_python(code):
     r = client.chat.completions.create(
@@ -159,20 +158,25 @@ def convert_to_python(code):
 # ===============================
 # INPUT UI
 # ===============================
-code = st.text_area("💻 Code Input", height=250)
+st.session_state.code = st.text_area(
+    "💻 Code Input",
+    value=st.session_state.code,
+    height=250
+)
+
 override = st.selectbox("Language Override", ["Auto","C++","Java","Python"])
 mode = st.radio("Explanation Mode", ["Beginner","Advanced"], horizontal=True)
 
-col1, col2, col3 = st.columns(3)
+# ===============================
+# BUTTON ROW (MATCHES HF)
+# ===============================
+col1, col2, col3, col4 = st.columns(4)
 
-# ===============================
-# BUTTONS
-# ===============================
 with col1:
     if st.button("🔍 Analyze Code"):
-        if code.strip():
-            lang = detect_language(code) if override == "Auto" else override
-            b, e, c = analyze_code(code, lang, mode)
+        if st.session_state.code.strip():
+            lang = detect_language(st.session_state.code) if override == "Auto" else override
+            b, e, c = analyze_code(st.session_state.code, lang, mode)
             st.session_state.bugs = b
             st.session_state.explanation = e
             st.session_state.complexity = c
@@ -183,17 +187,22 @@ with col2:
         if not st.session_state.analysis_done:
             st.warning("Please analyze the code first.")
         else:
-            lang = detect_language(code) if override == "Auto" else override
-            opt, t, s = optimize_code(code, lang)
+            lang = detect_language(st.session_state.code) if override == "Auto" else override
+            opt, t, s = optimize_code(st.session_state.code, lang)
             st.session_state.optimized_code = opt
             st.session_state.complexity = f"**Time Complexity:** {t}\n\n**Space Complexity:** {s}"
 
 with col3:
     if st.button("🔄 Convert to Python"):
-        st.session_state.python_code = convert_to_python(code)
+        st.session_state.python_code = convert_to_python(st.session_state.code)
+
+with col4:
+    if st.button("🧹 Clear"):
+        init_state()
+        st.experimental_rerun()
 
 # ===============================
-# OUTPUT UI (MATCHES GRADIO)
+# OUTPUT SECTIONS (IDENTICAL TO HF)
 # ===============================
 st.markdown("### 🐞 Detected Bugs")
 st.markdown(st.session_state.bugs)
